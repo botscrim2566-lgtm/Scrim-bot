@@ -52,16 +52,17 @@ const RARITY_KEYS = Object.keys(RARITY_CHARACTERS);
 // In-memory session stores
 // ─────────────────────────────────────────────
 
-const activeScrims    = new Map();
-const channelScrim    = new Map();
+const activeScrims    = new Map(); // messageId → ScrimSession
+const channelScrim    = new Map(); // channelId → messageId
+const scrimCooldown   = new Map(); // channelId → timestamp
 
-const activeInhouses  = new Map();
-const channelInhouse  = new Map();
-const inhouseCooldown = new Map();
+const activeInhouses  = new Map(); // messageId → InhouseSession
+const channelInhouse  = new Map(); // channelId → messageId
+const inhouseCooldown = new Map(); // channelId → timestamp
 
-const activeTryouts   = new Map();
-const channelTryout   = new Map();
-const tryoutCooldown  = new Map();
+const activeTryouts   = new Map(); // messageId → TryoutSession
+const channelTryout   = new Map(); // channelId → messageId
+const tryoutCooldown  = new Map(); // channelId → timestamp
 
 // ─────────────────────────────────────────────
 // Shared helpers
@@ -84,7 +85,7 @@ function clearTimer(session) {
 }
 
 // ─────────────────────────────────────────────
-// Rarity / character selects (shared)
+// Rarity / character select (shared)
 // ─────────────────────────────────────────────
 
 function raritySelect(prefix, sessionId, position) {
@@ -125,7 +126,7 @@ function buildScrimContent(session) {
   return lines.join("\n");
 }
 
-function buildScrimComponents(sessionId) {
+function buildScrimComponents(sessionId, session) {
   const posSelect = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`scrim_pos:${sessionId}`)
@@ -159,7 +160,7 @@ async function editScrimMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(sessionId) });
+      await msg.edit({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(sessionId, session) });
     }
   } catch { }
 }
@@ -189,6 +190,13 @@ async function handleScrimCommand(interaction) {
   if (!member?.roles.cache.some((r) => r.name.toLowerCase() === "scrim hoster"))
     return interaction.reply({ content: "❌ هذا الكوماند مخصص لأصحاب رتبة **SCRIM HOSTER** فقط!", flags: MessageFlags.Ephemeral });
 
+  const now = Date.now();
+  const lastScrim = scrimCooldown.get(interaction.channelId);
+  if (lastScrim !== undefined) {
+    const rem = 5 * 60 * 1000 - (now - lastScrim);
+    if (rem > 0) return interaction.reply({ content: `⏳ يجب الانتظار **${Math.ceil(rem / 60000)} دقيقة** قبل إنشاء سكريم جديد.`, flags: MessageFlags.Ephemeral });
+  }
+
   const existingId = channelScrim.get(interaction.channelId);
   if (existingId) await expireScrim(existingId, interaction.client);
 
@@ -205,9 +213,10 @@ async function handleScrimCommand(interaction) {
   session.messageId = messageId;
   activeScrims.set(messageId, session);
   channelScrim.set(interaction.channelId, messageId);
+  scrimCooldown.set(interaction.channelId, Date.now());
   session.timer = setTimeout(() => expireScrim(messageId, interaction.client), SCRIM_DURATION);
 
-  await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId) });
+  await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
 }
 
 async function handleScrimInteraction(interaction) {
@@ -275,7 +284,7 @@ async function scrimKickBtn(interaction) {
   const session = activeScrims.get(sessionId);
   if (!session) return interaction.reply({ content: "❌ السكريم لم يعد موجوداً.", flags: MessageFlags.Ephemeral });
   if (interaction.user.id !== session.hostId) return interaction.reply({ content: "❌ فقط مضيف السكريم يمكنه طرد اللاعبين!", flags: MessageFlags.Ephemeral });
-  if (!POSITIONS.some((p) => session.positions[p])) return interaction.reply({ content: "❌ لا يوجد لاعبون.", flags: MessageFlags.Ephemeral });
+  if (!POSITIONS.some((p) => session.positions[p])) return interaction.reply({ content: "❌ لا يوجد لاعبون في السكريم.", flags: MessageFlags.Ephemeral });
   await interaction.reply({ content: "اختر اللاعب:", components: [buildScrimKickMenu(sessionId, session)], flags: MessageFlags.Ephemeral });
 }
 
@@ -360,7 +369,7 @@ function buildTeamKickMenu(prefix, sessionId, session) {
 //  Generic team interaction handlers
 // ═══════════════════════════════════════════
 
-async function teamPosition(interaction, store, editFn, prefix) {
+async function teamPosition(interaction, store, editFn, title, prefix) {
   const sessionId = interaction.customId.split(":")[1];
   const session = store.get(sessionId);
   if (!session) return interaction.reply({ content: "❌ الجلسة لم تعد موجودة.", flags: MessageFlags.Ephemeral });
@@ -389,7 +398,7 @@ async function teamRarity(interaction, store, prefix) {
   await interaction.update({ content: `فئة **${rarity}** — اختر شخصيتك:`, components: [charSelect(prefix, sessionId, position, rarity)] });
 }
 
-async function teamChar(interaction, store, editFn) {
+async function teamChar(interaction, store, editFn, title, prefix) {
   const [, sessionId, position] = interaction.customId.split(":");
   const session = store.get(sessionId);
   if (!session) return interaction.update({ content: "❌ الجلسة لم تعد موجودة.", components: [] });
@@ -401,7 +410,7 @@ async function teamChar(interaction, store, editFn) {
   await editFn(sessionId, session, interaction.client);
 }
 
-async function teamLeave(interaction, store, editFn) {
+async function teamLeave(interaction, store, editFn, title, prefix) {
   const sessionId = interaction.customId.split(":")[1];
   const session = store.get(sessionId);
   if (!session) return interaction.reply({ content: "❌ الجلسة لم تعد موجودة.", flags: MessageFlags.Ephemeral });
@@ -422,7 +431,7 @@ async function teamKickBtn(interaction, store, prefix) {
   await interaction.reply({ content: "اختر اللاعب:", components: [buildTeamKickMenu(prefix, sessionId, session)], flags: MessageFlags.Ephemeral });
 }
 
-async function teamKickMenu(interaction, store, editFn) {
+async function teamKickMenu(interaction, store, editFn, title, prefix) {
   const sessionId = interaction.customId.split(":")[1];
   const session = store.get(sessionId);
   if (!session) return interaction.update({ content: "❌ الجلسة لم تعد موجودة.", components: [] });
@@ -519,12 +528,12 @@ async function handleInhouseCommand(interaction) {
 
 async function handleInhouseInteraction(interaction) {
   const id = interaction.customId;
-  if (id.startsWith("inhouse_pos:"))        return teamPosition(interaction, activeInhouses, editInhouseMessage, "inhouse");
+  if (id.startsWith("inhouse_pos:"))        return teamPosition(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
   if (id.startsWith("inhouse_rarity:"))     return teamRarity(interaction, activeInhouses, "inhouse");
-  if (id.startsWith("inhouse_char:"))       return teamChar(interaction, activeInhouses, editInhouseMessage);
-  if (id.startsWith("inhouse_leave:"))      return teamLeave(interaction, activeInhouses, editInhouseMessage);
+  if (id.startsWith("inhouse_char:"))       return teamChar(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
+  if (id.startsWith("inhouse_leave:"))      return teamLeave(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
   if (id.startsWith("inhouse_kick:"))       return teamKickBtn(interaction, activeInhouses, "inhouse");
-  if (id.startsWith("inhouse_kickmenu:"))   return teamKickMenu(interaction, activeInhouses, editInhouseMessage);
+  if (id.startsWith("inhouse_kickmenu:"))   return teamKickMenu(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
   if (id.startsWith("inhouse_changechar:")) return teamChangeChar(interaction, activeInhouses, "inhouse");
 }
 
@@ -597,12 +606,12 @@ async function handleTryoutCommand(interaction) {
 
 async function handleTryoutInteraction(interaction) {
   const id = interaction.customId;
-  if (id.startsWith("tryout_pos:"))        return teamPosition(interaction, activeTryouts, editTryoutMessage, "tryout");
+  if (id.startsWith("tryout_pos:"))        return teamPosition(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
   if (id.startsWith("tryout_rarity:"))     return teamRarity(interaction, activeTryouts, "tryout");
-  if (id.startsWith("tryout_char:"))       return teamChar(interaction, activeTryouts, editTryoutMessage);
-  if (id.startsWith("tryout_leave:"))      return teamLeave(interaction, activeTryouts, editTryoutMessage);
+  if (id.startsWith("tryout_char:"))       return teamChar(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
+  if (id.startsWith("tryout_leave:"))      return teamLeave(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
   if (id.startsWith("tryout_kick:"))       return teamKickBtn(interaction, activeTryouts, "tryout");
-  if (id.startsWith("tryout_kickmenu:"))   return teamKickMenu(interaction, activeTryouts, editTryoutMessage);
+  if (id.startsWith("tryout_kickmenu:"))   return teamKickMenu(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
   if (id.startsWith("tryout_changechar:")) return teamChangeChar(interaction, activeTryouts, "tryout");
 }
 
