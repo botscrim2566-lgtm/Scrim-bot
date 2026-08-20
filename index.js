@@ -31,7 +31,6 @@ const TEAMS            = ["HOME", "AWAY"];
 const SCRIM_DURATION   = 10 * 60 * 1000;
 const INHOUSE_DURATION = 10 * 60 * 1000;
 const TRYOUT_DURATION  = 10 * 60 * 1000;
-const COOLDOWN_MS      = 10 * 60 * 1000;
 
 const RARITY_CHARACTERS = {
   RARE:        ["Isagi", "Gagamaru", "Chigiri"],
@@ -54,15 +53,12 @@ const RARITY_KEYS = Object.keys(RARITY_CHARACTERS);
 
 const activeScrims    = new Map(); // messageId → ScrimSession
 const channelScrim    = new Map(); // channelId → messageId
-const scrimCooldown   = new Map(); // channelId → timestamp
 
 const activeInhouses  = new Map(); // messageId → InhouseSession
 const channelInhouse  = new Map(); // channelId → messageId
-const inhouseCooldown = new Map(); // channelId → timestamp
 
 const activeTryouts   = new Map(); // messageId → TryoutSession
 const channelTryout   = new Map(); // channelId → messageId
-const tryoutCooldown  = new Map(); // channelId → timestamp
 
 // ─────────────────────────────────────────────
 // Shared helpers
@@ -190,13 +186,6 @@ async function handleScrimCommand(interaction) {
   if (!member?.roles.cache.some((r) => r.name.toLowerCase() === "scrim hoster"))
     return interaction.reply({ content: "❌ هذا الكوماند مخصص لأصحاب رتبة **SCRIM HOSTER** فقط!", flags: MessageFlags.Ephemeral });
 
-  const now = Date.now();
-  const lastScrim = scrimCooldown.get(interaction.channelId);
-  if (lastScrim !== undefined) {
-    const rem = 5 * 60 * 1000 - (now - lastScrim);
-    if (rem > 0) return interaction.reply({ content: `⏳ يجب الانتظار **${Math.ceil(rem / 60000)} دقيقة** قبل إنشاء سكريم جديد.`, flags: MessageFlags.Ephemeral });
-  }
-
   const existingId = channelScrim.get(interaction.channelId);
   if (existingId) await expireScrim(existingId, interaction.client);
 
@@ -213,7 +202,6 @@ async function handleScrimCommand(interaction) {
   session.messageId = messageId;
   activeScrims.set(messageId, session);
   channelScrim.set(interaction.channelId, messageId);
-  scrimCooldown.set(interaction.channelId, Date.now());
   session.timer = setTimeout(() => expireScrim(messageId, interaction.client), SCRIM_DURATION);
 
   await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
@@ -498,13 +486,6 @@ async function handleInhouseCommand(interaction) {
   if (!member?.roles.cache.some((r) => r.name.toLowerCase() === "scrim hoster"))
     return interaction.reply({ content: "❌ هذا الكوماند مخصص لأصحاب رتبة **SCRIM HOSTER** فقط!", flags: MessageFlags.Ephemeral });
 
-  const now = Date.now();
-  const last = inhouseCooldown.get(interaction.channelId);
-  if (last !== undefined) {
-    const rem = COOLDOWN_MS - (now - last);
-    if (rem > 0) return interaction.reply({ content: `⏳ يجب الانتظار **${Math.ceil(rem / 60000)} دقيقة** قبل إنشاء إن-هاوس جديد.`, flags: MessageFlags.Ephemeral });
-  }
-
   const existingId = channelInhouse.get(interaction.channelId);
   if (existingId) await expireInhouse(existingId, interaction.client);
 
@@ -520,7 +501,6 @@ async function handleInhouseCommand(interaction) {
   session.messageId = messageId;
   activeInhouses.set(messageId, session);
   channelInhouse.set(interaction.channelId, messageId);
-  inhouseCooldown.set(interaction.channelId, Date.now());
   session.timer = setTimeout(() => expireInhouse(messageId, interaction.client), INHOUSE_DURATION);
 
   await interaction.editReply({ content: buildTeamContent(session, "IN-HOUSE!"), embeds: [], components: buildTeamComponents("inhouse", messageId) });
@@ -576,13 +556,6 @@ async function handleTryoutCommand(interaction) {
   if (!member?.roles.cache.some((r) => r.name.toLowerCase() === "tryout hoster"))
     return interaction.reply({ content: "❌ هذا الكوماند مخصص لأصحاب رتبة **TRYOUT HOSTER** فقط!", flags: MessageFlags.Ephemeral });
 
-  const now = Date.now();
-  const last = tryoutCooldown.get(interaction.channelId);
-  if (last !== undefined) {
-    const rem = COOLDOWN_MS - (now - last);
-    if (rem > 0) return interaction.reply({ content: `⏳ يجب الانتظار **${Math.ceil(rem / 60000)} دقيقة** قبل إنشاء tryout جديد.`, flags: MessageFlags.Ephemeral });
-  }
-
   const existingId = channelTryout.get(interaction.channelId);
   if (existingId) await expireTryout(existingId, interaction.client);
 
@@ -598,7 +571,6 @@ async function handleTryoutCommand(interaction) {
   session.messageId = messageId;
   activeTryouts.set(messageId, session);
   channelTryout.set(interaction.channelId, messageId);
-  tryoutCooldown.set(interaction.channelId, Date.now());
   session.timer = setTimeout(() => expireTryout(messageId, interaction.client), TRYOUT_DURATION);
 
   await interaction.editReply({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", messageId) });
