@@ -28,8 +28,6 @@ import { createServer } from "http";
 
 const POSITIONS        = ["CF", "RW", "LW", "CM", "GK"];
 const TEAMS            = ["HOME", "AWAY"];
-const SCRIM_DURATION   = 10 * 60 * 1000;
-const INHOUSE_DURATION = 10 * 60 * 1000;
 const TRYOUT_DURATION  = 10 * 60 * 1000;
 
 const RARITY_CHARACTERS = {
@@ -202,7 +200,6 @@ async function handleScrimCommand(interaction) {
   session.messageId = messageId;
   activeScrims.set(messageId, session);
   channelScrim.set(interaction.channelId, messageId);
-  session.timer = setTimeout(() => expireScrim(messageId, interaction.client), SCRIM_DURATION);
 
   await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
 }
@@ -501,7 +498,6 @@ async function handleInhouseCommand(interaction) {
   session.messageId = messageId;
   activeInhouses.set(messageId, session);
   channelInhouse.set(interaction.channelId, messageId);
-  session.timer = setTimeout(() => expireInhouse(messageId, interaction.client), INHOUSE_DURATION);
 
   await interaction.editReply({ content: buildTeamContent(session, "IN-HOUSE!"), embeds: [], components: buildTeamComponents("inhouse", messageId) });
 }
