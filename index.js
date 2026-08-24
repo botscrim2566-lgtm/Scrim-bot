@@ -338,7 +338,7 @@ function buildTeamComponents(prefix, sessionId) {
   );
   if (prefix === "inhouse") {
     buttons.addComponents(
-      new ButtonBuilder().setCustomId(`inhouse_end:${sessionId}`).setLabel("إنهاء الإنهاوس").setEmoji("🏁").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`inhouse_end:${sessionId}`).setLabel("End inhouse").setStyle(ButtonStyle.Success)
     );
   }
   return [posSelect, buttons];
@@ -476,13 +476,6 @@ async function expireInhouse(sessionId, client) {
   channelInhouse.delete(s.channelId);
   s.endedAt = new Date();
   lastInhouses.set(s.channelId, s);
-  try {
-    const ch = await client.channels.fetch(s.channelId);
-    if (ch?.isTextBased()) {
-      const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
-    }
-  } catch { }
 }
 
 function getInhousePlayers(session) {
@@ -560,6 +553,19 @@ function buildReviewModal(channelId, player) {
     );
 }
 
+function buildInhouseResultContent(session) {
+  const lines = ["# Result", "", buildTeamContent(session, "IN-HOUSE!"), "", "## Player Ratings", ""];
+  for (const player of getInhousePlayers(session)) {
+    const review = session.reviews?.get(player.userId);
+    if (review) {
+      lines.push(`**${player.username}** — **${review.rating}/10**`);
+      lines.push(`> ${review.comment}`);
+      lines.push("");
+    }
+  }
+  return lines.join("\n");
+}
+
 async function sendInhouseResultMessage(session, client) {
   if (session.resultSent) return;
   const players = getInhousePlayers(session);
@@ -569,9 +575,18 @@ async function sendInhouseResultMessage(session, client) {
   try {
     const channel = await client.channels.fetch(session.channelId);
     if (channel?.isTextBased()) {
-      await channel.send({
-        content: `# Result\n\n${buildTeamContent(session, "IN-HOUSE!")}`,
-      });
+      const content = buildInhouseResultContent(session);
+      const chunks = [];
+      let chunk = "";
+      for (const line of content.split("\n")) {
+        if ((chunk + line + "\n").length > 1900 && chunk) {
+          chunks.push(chunk);
+          chunk = "";
+        }
+        chunk += `${line}\n`;
+      }
+      if (chunk) chunks.push(chunk);
+      for (const part of chunks) await channel.send({ content: part });
     }
   } catch (error) {
     session.resultSent = false;
@@ -582,7 +597,7 @@ async function sendInhouseResultMessage(session, client) {
 async function handleInresultCommand(interaction) {
   const session = lastInhouses.get(interaction.channelId);
   if (!session)
-    return interaction.reply({ content: "❌ لا يوجد إن-هاوس منتهٍ في هذه القناة. أنهِ الإنهاوس أولاً باستخدام زر **إنهاء الإنهاوس**.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({ content: "❌ لا يوجد إن-هاوس منتهٍ في هذه القناة. أنهِ الإنهاوس أولاً باستخدام زر **End inhouse**.", flags: MessageFlags.Ephemeral });
   if (interaction.user.id !== session.hostId)
     return interaction.reply({ content: "❌ كوماند **/inresult** متاح فقط لمن أنشأ آخر **/inhouse**.", flags: MessageFlags.Ephemeral });
   return interaction.reply({ ...buildInresultView(session), flags: MessageFlags.Ephemeral });
