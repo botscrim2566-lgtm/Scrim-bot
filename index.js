@@ -558,7 +558,7 @@ function buildInhouseResultContent(session) {
   for (const player of getInhousePlayers(session)) {
     const review = session.reviews?.get(player.userId);
     if (review) {
-      lines.push(`**${player.username}** — **${player.position}** — **${review.rating}/10**`);
+      lines.push(`<@${player.userId}> — **${player.position}** — **${review.rating}/10**`);
       lines.push(`> ${review.comment}`);
       lines.push("");
     }
