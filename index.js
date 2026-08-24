@@ -18,6 +18,10 @@ import {
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   MessageFlags,
 } from "discord.js";
 import { createServer } from "http";
@@ -54,6 +58,7 @@ const channelScrim    = new Map(); // channelId → messageId
 
 const activeInhouses  = new Map(); // messageId → InhouseSession
 const channelInhouse  = new Map(); // channelId → messageId
+const lastInhouses    = new Map(); // channelId → completed InhouseSession
 
 const activeTryouts   = new Map(); // messageId → TryoutSession
 const channelTryout   = new Map(); // channelId → messageId
@@ -331,6 +336,11 @@ function buildTeamComponents(prefix, sessionId) {
     new ButtonBuilder().setCustomId(`${prefix}_leave:${sessionId}`).setLabel("Leave Position").setEmoji("🚪").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${prefix}_kick:${sessionId}`).setLabel("Kick Player").setStyle(ButtonStyle.Danger)
   );
+  if (prefix === "inhouse") {
+    buttons.addComponents(
+      new ButtonBuilder().setCustomId(`inhouse_end:${sessionId}`).setLabel("إنهاء الإنهاوس").setEmoji("🏁").setStyle(ButtonStyle.Success)
+    );
+  }
   return [posSelect, buttons];
 }
 
@@ -464,6 +474,8 @@ async function expireInhouse(sessionId, client) {
   clearTimer(s);
   activeInhouses.delete(sessionId);
   channelInhouse.delete(s.channelId);
+  s.endedAt = new Date();
+  lastInhouses.set(s.channelId, s);
   try {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
@@ -471,6 +483,127 @@ async function expireInhouse(sessionId, client) {
       await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
     }
   } catch { }
+}
+
+function getInhousePlayers(session) {
+  return TEAMS.flatMap((team) =>
+    POSITIONS.filter((position) => session.teams[team][position]).map((position) => ({
+      ...session.teams[team][position],
+      team,
+      position,
+    }))
+  );
+}
+
+function buildInresultView(session) {
+  const players = getInhousePlayers(session);
+  const embed = new EmbedBuilder()
+    .setColor(0x1f8bff)
+    .setTitle("🏆 تقييمات آخر إن-هاوس")
+    .setDescription(
+      `**المضيف:** <@${session.hostId}>\n` +
+      `**عدد اللاعبين:** ${players.length}\n\n` +
+      "اختر لاعباً من القائمة لكتابة تقييمه. التقييم لا يظهر إلا بعد حفظه."
+    )
+    .setFooter({ text: "Blue Lock Rivals • In-house Results" });
+
+  const options = players.slice(0, 25).map((player) => ({
+    label: `${player.username} • ${player.team} ${player.position}`.slice(0, 100),
+    value: player.userId,
+    description: player.character ? `الشخصية: ${player.character}`.slice(0, 100) : "لم يتم اختيار شخصية",
+  }));
+  if (!options.length) {
+    options.push({ label: "لا يوجد لاعبون مسجلون", value: "none", description: "لا يمكن إضافة تقييمات" });
+  }
+
+  const select = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`inresult_player:${session.channelId}`)
+      .setPlaceholder("اختر لاعباً لكتابة تقييمه")
+      .addOptions(options)
+  );
+  const close = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`inresult_close:${session.channelId}`)
+      .setLabel("إغلاق القائمة")
+      .setEmoji("✖️")
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return { embeds: [embed], components: [select, close] };
+}
+
+function buildReviewModal(channelId, player) {
+  return new ModalBuilder()
+    .setCustomId(`inresult_modal:${channelId}:${player.userId}`)
+    .setTitle(`تقييم ${player.username}`.slice(0, 45))
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("rating")
+          .setLabel("التقييم من 1 إلى 10")
+          .setPlaceholder("مثال: 8")
+          .setStyle(TextInputStyle.Short)
+          .setMinLength(1)
+          .setMaxLength(2)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("comment")
+          .setLabel("اكتب تقييمك للاعب")
+          .setPlaceholder("أداؤه، نقاط القوة، وما يمكن تحسينه...")
+          .setStyle(TextInputStyle.Paragraph)
+          .setMinLength(3)
+          .setMaxLength(1000)
+          .setRequired(true)
+      )
+    );
+}
+
+async function handleInresultCommand(interaction) {
+  const session = lastInhouses.get(interaction.channelId);
+  if (!session)
+    return interaction.reply({ content: "❌ لا يوجد إن-هاوس منتهٍ في هذه القناة. أنهِ الإنهاوس أولاً باستخدام زر **إنهاء الإنهاوس**.", flags: MessageFlags.Ephemeral });
+  if (interaction.user.id !== session.hostId)
+    return interaction.reply({ content: "❌ كوماند **/inresult** متاح فقط لمن أنشأ آخر **/inhouse**.", flags: MessageFlags.Ephemeral });
+  return interaction.reply({ ...buildInresultView(session), flags: MessageFlags.Ephemeral });
+}
+
+async function handleInresultInteraction(interaction) {
+  const [, channelId] = interaction.customId.split(":");
+  const session = lastInhouses.get(channelId);
+  if (!session) return interaction.update({ content: "❌ انتهت صلاحية نتائج هذا الإنهاوس.", embeds: [], components: [] });
+  if (interaction.user.id !== session.hostId)
+    return interaction.reply({ content: "❌ فقط منشئ الإنهاوس يستطيع كتابة التقييمات.", flags: MessageFlags.Ephemeral });
+
+  if (interaction.customId.startsWith("inresult_close:"))
+    return interaction.update({ content: "✅ تم إغلاق قائمة التقييمات.", embeds: [], components: [] });
+
+  if (interaction.customId.startsWith("inresult_player:")) {
+    const player = getInhousePlayers(session).find((p) => p.userId === interaction.values[0]);
+    if (!player) return interaction.reply({ content: "❌ هذا اللاعب غير موجود في نتائج الإنهاوس.", flags: MessageFlags.Ephemeral });
+    return interaction.showModal(buildReviewModal(channelId, player));
+  }
+
+  if (interaction.customId.startsWith("inresult_modal:")) {
+    const playerId = interaction.customId.split(":")[2];
+    const player = getInhousePlayers(session).find((p) => p.userId === playerId);
+    const rating = Number(interaction.fields.getTextInputValue("rating"));
+    if (!player || !Number.isInteger(rating) || rating < 1 || rating > 10)
+      return interaction.reply({ content: "❌ التقييم يجب أن يكون رقماً صحيحاً من **1 إلى 10**.", flags: MessageFlags.Ephemeral });
+    session.reviews ??= new Map();
+    session.reviews.set(playerId, {
+      playerId,
+      playerName: player.username,
+      team: player.team,
+      position: player.position,
+      rating,
+      comment: interaction.fields.getTextInputValue("comment"),
+      reviewerId: interaction.user.id,
+      updatedAt: new Date(),
+    });
+    return interaction.reply({ content: `✅ تم حفظ تقييم **${player.username}** بدرجة **${rating}/10**.`, flags: MessageFlags.Ephemeral });
+  }
 }
 
 async function handleInhouseCommand(interaction) {
@@ -502,8 +635,19 @@ async function handleInhouseCommand(interaction) {
   await interaction.editReply({ content: buildTeamContent(session, "IN-HOUSE!"), embeds: [], components: buildTeamComponents("inhouse", messageId) });
 }
 
+async function endInhouse(interaction) {
+  const sessionId = interaction.customId.split(":")[1];
+  const session = activeInhouses.get(sessionId);
+  if (!session) return interaction.reply({ content: "❌ هذا الإنهاوس منتهٍ بالفعل أو لم يعد موجوداً.", flags: MessageFlags.Ephemeral });
+  if (interaction.user.id !== session.hostId)
+    return interaction.reply({ content: "❌ فقط من أنشأ الإنهاوس يستطيع إنهاءه.", flags: MessageFlags.Ephemeral });
+  await interaction.reply({ content: "🏁 تم إنهاء الإنهاوس وحفظ اللاعبين. استخدم **/inresult** لبدء التقييمات.", flags: MessageFlags.Ephemeral });
+  await expireInhouse(sessionId, interaction.client);
+}
+
 async function handleInhouseInteraction(interaction) {
   const id = interaction.customId;
+  if (id.startsWith("inhouse_end:"))          return endInhouse(interaction);
   if (id.startsWith("inhouse_pos:"))        return teamPosition(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
   if (id.startsWith("inhouse_rarity:"))     return teamRarity(interaction, activeInhouses, "inhouse");
   if (id.startsWith("inhouse_char:"))       return teamChar(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
@@ -591,6 +735,7 @@ async function registerCommands(token, clientId) {
   const commands = [
     new SlashCommandBuilder().setName("scrim").setDescription("ابدأ سكريم جديد للعبة Blue Lock Rivals").toJSON(),
     new SlashCommandBuilder().setName("inhouse").setDescription("ابدأ إن-هاوس جديد فريقين HOME وAWAY").toJSON(),
+    new SlashCommandBuilder().setName("inresult").setDescription("اكتب تقييمات لاعبي آخر إن-هاوس أنشأته").toJSON(),
     new SlashCommandBuilder().setName("tryout").setDescription("ابدأ Tryout جديد فريقين HOME وAWAY").toJSON(),
   ];
   const rest = new REST().setToken(token);
@@ -628,13 +773,15 @@ async function main() {
       if (interaction.isChatInputCommand()) {
         if (interaction.commandName === "scrim")   return handleScrimCommand(interaction);
         if (interaction.commandName === "inhouse") return handleInhouseCommand(interaction);
+        if (interaction.commandName === "inresult") return handleInresultCommand(interaction);
         if (interaction.commandName === "tryout")  return handleTryoutCommand(interaction);
         return;
       }
-      if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
+      if (!interaction.isStringSelectMenu() && !interaction.isButton() && !interaction.isModalSubmit()) return;
       const id = interaction.customId;
       if (id.startsWith("scrim_"))   return handleScrimInteraction(interaction);
       if (id.startsWith("inhouse_")) return handleInhouseInteraction(interaction);
+      if (id.startsWith("inresult_")) return handleInresultInteraction(interaction);
       if (id.startsWith("tryout_"))  return handleTryoutInteraction(interaction);
     } catch (err) {
       console.error("[Bot] Interaction error:", err);
