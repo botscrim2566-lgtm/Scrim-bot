@@ -352,20 +352,30 @@ function buildTeamKickMenu(prefix, sessionId, session) {
 }
 
 function buildTeamSwapMenu(prefix, sessionId, session, requesterId) {
+  const requester = findPlayerInTeams(session, requesterId);
+  const requesterEntry = requester
+    ? session.teams[requester.team][requester.position]
+    : null;
+
   const opts = TEAMS.flatMap((team) =>
     POSITIONS.filter((p) => {
       const player = session.teams[team][p];
-      return player && player.userId !== requesterId;
+      return player
+        && player.userId !== requesterId
+        && requester
+        && p === requester.position
+        && player.character
+        && requesterEntry?.character
+        && player.character === requesterEntry.character;
     }).map((p) => {
-      const player = session.teams[team][p];
       return {
-        label: `${player.username} — ${team} - ${p}`,
-        value: `${team}:${p}:${player.userId}`,
+        label: `${team} — ${p}`,
+        value: `${team}:${p}`,
       };
     })
   );
 
-  if (!opts.length) opts.push({ label: "لا يوجد لاعبون آخرون", value: "none" });
+  if (!opts.length) opts.push({ label: "لا يوجد لاعب مطابق", value: "none" });
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`${prefix}_swapmenu:${sessionId}:${requesterId}`)
@@ -463,14 +473,23 @@ async function teamSwapBtn(interaction, store, prefix) {
   const requester = findPlayerInTeams(session, interaction.user.id);
   if (!requester) return interaction.reply({ content: "❌ يجب أن تكون داخل الجلسة أولاً.", flags: MessageFlags.Ephemeral });
 
-  const hasOtherPlayers = TEAMS.some((team) =>
+  const requesterEntry = session.teams[requester.team][requester.position];
+  const hasMatchingPlayer = TEAMS.some((team) =>
     POSITIONS.some((pos) => {
       const player = session.teams[team][pos];
-      return player && player.userId !== interaction.user.id;
+      return player
+        && player.userId !== interaction.user.id
+        && pos === requester.position
+        && requesterEntry?.character
+        && player.character === requesterEntry.character
+        && team !== requester.team;
     })
   );
-  if (!hasOtherPlayers)
-    return interaction.reply({ content: "❌ لا يوجد لاعبون آخرون لطلب التبديل معهم.", flags: MessageFlags.Ephemeral });
+  if (!hasMatchingPlayer)
+    return interaction.reply({
+      content: "❌ يجب أن يكون اللاعب الآخر في الفريق المقابل، وبنفس المركز ونفس الشخصية.",
+      flags: MessageFlags.Ephemeral,
+    });
 
   await interaction.reply({
     content: "اختر اللاعب الذي تريد تبديل الفريق معه:",
@@ -489,13 +508,20 @@ async function teamSwapMenu(interaction, store, prefix) {
   const value = interaction.values[0];
   if (value === "none") return interaction.update({ content: "❌ لا يوجد لاعبون آخرون.", components: [] });
 
-  const [targetTeam, targetPosition, targetId] = value.split(":");
+  const [targetTeam, targetPosition] = value.split(":");
   const requester = findPlayerInTeams(session, requesterId);
-  const target = findPlayerInTeams(session, targetId);
-  if (!requester || !target)
+  const targetEntry = session.teams[targetTeam]?.[targetPosition];
+  const targetId = targetEntry?.userId;
+  if (!requester || !targetEntry || !targetId)
     return interaction.update({ content: "❌ لم يعد أحد اللاعبين موجوداً في الجلسة.", components: [] });
-  if (requester.team === target.team)
-    return interaction.update({ content: "❌ أنتما في نفس الفريق بالفعل.", components: [] });
+  const requesterEntry = session.teams[requester.team][requester.position];
+  const target = findPlayerInTeams(session, targetId);
+  if (!target || requester.team === target.team || requester.position !== target.position
+      || !requesterEntry?.character || requesterEntry.character !== targetEntry.character)
+    return interaction.update({
+      content: "❌ يمكن التبديل فقط بين لاعبين في الفريق المقابل وبنفس المركز ونفس الشخصية.",
+      components: [],
+    });
 
   if (!session.swapRequests) session.swapRequests = new Map();
   const requestId = interaction.id;
@@ -511,14 +537,29 @@ async function teamSwapMenu(interaction, store, prefix) {
     new ButtonBuilder().setCustomId(`${prefix}_swapreject:${sessionId}:${requestId}`).setLabel("Reject").setStyle(ButtonStyle.Danger)
   );
 
+  const targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+  if (!targetUser) {
+    session.swapRequests.delete(requestId);
+    return interaction.update({ content: "❌ تعذر الوصول إلى اللاعب لإرسال الطلب في رسالة خاصة.", components: [] });
+  }
+
+  try {
+    await targetUser.send({
+      content: `<@${targetId}> لديك طلب تبديل فريق من <@${requesterId}>.\nالمركز: **${requester.position}** — الشخصية: **${requesterEntry.character}**\nاضغط **Accept** للموافقة أو **Reject** للرفض.`,
+      components: [requestButtons],
+      allowedMentions: { users: [targetId] },
+    });
+  } catch {
+    session.swapRequests.delete(requestId);
+    return interaction.update({
+      content: "❌ تعذر إرسال الطلب في رسالة خاصة. تأكد من أن الرسائل الخاصة مفعّلة لديك.",
+      components: [],
+    });
+  }
+
   await interaction.update({
-    content: `✅ تم إرسال طلب التبديل إلى <@${targetId}>.`,
+    content: `✅ تم إرسال طلب التبديل إلى <@${targetId}> في رسالة خاصة.`,
     components: [],
-  });
-  await interaction.channel.send({
-    content: `<@${targetId}> لديك طلب تبديل فريق من <@${requesterId}>.\nاضغط **Accept** للموافقة أو **Reject** للرفض.`,
-    components: [requestButtons],
-    allowedMentions: { users: [targetId] },
   });
 }
 
