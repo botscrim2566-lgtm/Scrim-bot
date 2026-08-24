@@ -496,7 +496,7 @@ function buildInresultView(session) {
     .setDescription(
       `**المضيف:** <@${session.hostId}>\n` +
       `**عدد اللاعبين:** ${players.length}\n\n` +
-      "اختر لاعباً من القائمة لكتابة تقييمه. التقييم لا يظهر إلا بعد حفظه."
+      "بما أنك منشئ الإنهاوس، يمكنك تقييم كل لاعب شارك فيه من القائمة. التقييم لا يظهر إلا بعد حفظه."
     )
     .setFooter({ text: "Blue Lock Rivals • In-house Results" });
 
@@ -558,7 +558,7 @@ function buildInhouseResultContent(session) {
   for (const player of getInhousePlayers(session)) {
     const review = session.reviews?.get(player.userId);
     if (review) {
-      lines.push(`**${player.username}** — **${review.rating}/10**`);
+      lines.push(`**${player.username}** — **${player.position}** — **${review.rating}/10**`);
       lines.push(`> ${review.comment}`);
       lines.push("");
     }
