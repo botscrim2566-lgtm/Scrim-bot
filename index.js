@@ -329,7 +329,6 @@ function buildTeamComponents(prefix, sessionId) {
   const buttons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${prefix}_changechar:${sessionId}`).setLabel("تغيير الشخصية").setEmoji("🔄").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`${prefix}_leave:${sessionId}`).setLabel("Leave Position").setEmoji("🚪").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${prefix}_swap:${sessionId}`).setLabel("Swap").setEmoji("🔁").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${prefix}_kick:${sessionId}`).setLabel("Kick Player").setStyle(ButtonStyle.Danger)
   );
   return [posSelect, buttons];
@@ -348,39 +347,6 @@ function buildTeamKickMenu(prefix, sessionId, session) {
       .setCustomId(`${prefix}_kickmenu:${sessionId}`)
       .setPlaceholder("اختر لاعباً لطرده")
       .addOptions(opts)
-  );
-}
-
-function buildTeamSwapMenu(prefix, sessionId, session, requesterId) {
-  const requester = findPlayerInTeams(session, requesterId);
-  const requesterEntry = requester
-    ? session.teams[requester.team][requester.position]
-    : null;
-
-  const opts = TEAMS.flatMap((team) =>
-    POSITIONS.filter((p) => {
-      const player = session.teams[team][p];
-      return player
-        && player.userId !== requesterId
-        && requester
-        && p === requester.position
-        && player.character
-        && requesterEntry?.character
-        && player.character === requesterEntry.character;
-    }).map((p) => {
-      return {
-        label: `${team} — ${p}`,
-        value: `${team}:${p}`,
-      };
-    })
-  );
-
-  if (!opts.length) opts.push({ label: "لا يوجد لاعب مطابق", value: "none" });
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`${prefix}_swapmenu:${sessionId}:${requesterId}`)
-      .setPlaceholder("اختر اللاعب الذي تريد تبديل الفريق معه")
-      .addOptions(opts.slice(0, 25))
   );
 }
 
@@ -465,134 +431,6 @@ async function teamKickMenu(interaction, store, editFn, title, prefix) {
   await editFn(sessionId, session, interaction.client);
 }
 
-async function teamSwapBtn(interaction, store, prefix) {
-  const sessionId = interaction.customId.split(":")[1];
-  const session = store.get(sessionId);
-  if (!session) return interaction.reply({ content: "❌ الجلسة لم تعد موجودة.", flags: MessageFlags.Ephemeral });
-
-  const requester = findPlayerInTeams(session, interaction.user.id);
-  if (!requester) return interaction.reply({ content: "❌ يجب أن تكون داخل الجلسة أولاً.", flags: MessageFlags.Ephemeral });
-
-  const requesterEntry = session.teams[requester.team][requester.position];
-  const hasMatchingPlayer = TEAMS.some((team) =>
-    POSITIONS.some((pos) => {
-      const player = session.teams[team][pos];
-      return player
-        && player.userId !== interaction.user.id
-        && pos === requester.position
-        && requesterEntry?.character
-        && player.character === requesterEntry.character
-        && team !== requester.team;
-    })
-  );
-  if (!hasMatchingPlayer)
-    return interaction.reply({
-      content: "❌ يجب أن يكون اللاعب الآخر في الفريق المقابل، وبنفس المركز ونفس الشخصية.",
-      flags: MessageFlags.Ephemeral,
-    });
-
-  await interaction.reply({
-    content: "اختر اللاعب الذي تريد تبديل الفريق معه:",
-    components: [buildTeamSwapMenu(prefix, sessionId, session, interaction.user.id)],
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function teamSwapMenu(interaction, store, prefix) {
-  const [, sessionId, requesterId] = interaction.customId.split(":");
-  const session = store.get(sessionId);
-  if (!session) return interaction.update({ content: "❌ الجلسة لم تعد موجودة.", components: [] });
-  if (interaction.user.id !== requesterId)
-    return interaction.update({ content: "❌ هذه القائمة ليست مخصصة لك.", components: [] });
-
-  const value = interaction.values[0];
-  if (value === "none") return interaction.update({ content: "❌ لا يوجد لاعبون آخرون.", components: [] });
-
-  const [targetTeam, targetPosition] = value.split(":");
-  const requester = findPlayerInTeams(session, requesterId);
-  const targetEntry = session.teams[targetTeam]?.[targetPosition];
-  const targetId = targetEntry?.userId;
-  if (!requester || !targetEntry || !targetId)
-    return interaction.update({ content: "❌ لم يعد أحد اللاعبين موجوداً في الجلسة.", components: [] });
-  const requesterEntry = session.teams[requester.team][requester.position];
-  const target = findPlayerInTeams(session, targetId);
-  if (!target || requester.team === target.team || requester.position !== target.position
-      || !requesterEntry?.character || requesterEntry.character !== targetEntry.character)
-    return interaction.update({
-      content: "❌ يمكن التبديل فقط بين لاعبين في الفريق المقابل وبنفس المركز ونفس الشخصية.",
-      components: [],
-    });
-
-  if (!session.swapRequests) session.swapRequests = new Map();
-  const requestId = interaction.id;
-  session.swapRequests.set(requestId, {
-    requesterId,
-    targetId,
-    requesterTeam: requester.team,
-    targetTeam: target.team,
-  });
-
-  const requestButtons = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`${prefix}_swapaccept:${sessionId}:${requestId}`).setLabel("Accept").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`${prefix}_swapreject:${sessionId}:${requestId}`).setLabel("Reject").setStyle(ButtonStyle.Danger)
-  );
-
-  const targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
-  if (!targetUser) {
-    session.swapRequests.delete(requestId);
-    return interaction.update({ content: "❌ تعذر الوصول إلى اللاعب لإرسال الطلب في رسالة خاصة.", components: [] });
-  }
-
-  try {
-    await targetUser.send({
-      content: `<@${targetId}> لديك طلب تبديل فريق من <@${requesterId}>.\nالمركز: **${requester.position}** — الشخصية: **${requesterEntry.character}**\nاضغط **Accept** للموافقة أو **Reject** للرفض.`,
-      components: [requestButtons],
-      allowedMentions: { users: [targetId] },
-    });
-  } catch {
-    session.swapRequests.delete(requestId);
-    return interaction.update({
-      content: "❌ تعذر إرسال الطلب في رسالة خاصة. تأكد من أن الرسائل الخاصة مفعّلة لديك.",
-      components: [],
-    });
-  }
-
-  await interaction.update({
-    content: `✅ تم إرسال طلب التبديل إلى <@${targetId}> في رسالة خاصة.`,
-    components: [],
-  });
-}
-
-async function teamSwapDecision(interaction, store, editFn, prefix, accepted) {
-  const [, sessionId, requestId] = interaction.customId.split(":");
-  const session = store.get(sessionId);
-  const request = session?.swapRequests?.get(requestId);
-  if (!session || !request)
-    return interaction.update({ content: "❌ انتهى هذا الطلب أو لم يعد موجوداً.", components: [] });
-  if (interaction.user.id !== request.targetId)
-    return interaction.reply({ content: "❌ هذا الطلب مخصص للاعب الذي تم منشنه فقط.", flags: MessageFlags.Ephemeral });
-
-  session.swapRequests.delete(requestId);
-  if (!accepted)
-    return interaction.update({ content: `❌ <@${request.targetId}> رفض طلب تبديل الفريق.`, components: [] });
-
-  const requester = findPlayerInTeams(session, request.requesterId);
-  const target = findPlayerInTeams(session, request.targetId);
-  if (!requester || !target || requester.team === target.team)
-    return interaction.update({ content: "❌ تعذر التبديل لأن أحد اللاعبين غادر أو أصبح في نفس الفريق.", components: [] });
-
-  const requesterEntry = session.teams[requester.team][requester.position];
-  const targetEntry = session.teams[target.team][target.position];
-  session.teams[requester.team][requester.position] = targetEntry;
-  session.teams[target.team][target.position] = requesterEntry;
-
-  await interaction.update({
-    content: `✅ تم قبول طلب التبديل! <@${request.requesterId}> و <@${request.targetId}> بدّلا الفريقين.`,
-    components: [],
-  });
-  await editFn(sessionId, session, interaction.client);
-}
-
 async function teamChangeChar(interaction, store, prefix) {
   const sessionId = interaction.customId.split(":")[1];
   const session = store.get(sessionId);
@@ -672,10 +510,6 @@ async function handleInhouseInteraction(interaction) {
   if (id.startsWith("inhouse_leave:"))      return teamLeave(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
   if (id.startsWith("inhouse_kick:"))       return teamKickBtn(interaction, activeInhouses, "inhouse");
   if (id.startsWith("inhouse_kickmenu:"))   return teamKickMenu(interaction, activeInhouses, editInhouseMessage, "IN-HOUSE!", "inhouse");
-  if (id.startsWith("inhouse_swap:"))       return teamSwapBtn(interaction, activeInhouses, "inhouse");
-  if (id.startsWith("inhouse_swapmenu:"))   return teamSwapMenu(interaction, activeInhouses, "inhouse");
-  if (id.startsWith("inhouse_swapaccept:")) return teamSwapDecision(interaction, activeInhouses, editInhouseMessage, "inhouse", true);
-  if (id.startsWith("inhouse_swapreject:")) return teamSwapDecision(interaction, activeInhouses, editInhouseMessage, "inhouse", false);
   if (id.startsWith("inhouse_changechar:")) return teamChangeChar(interaction, activeInhouses, "inhouse");
 }
 
@@ -746,10 +580,6 @@ async function handleTryoutInteraction(interaction) {
   if (id.startsWith("tryout_leave:"))      return teamLeave(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
   if (id.startsWith("tryout_kick:"))       return teamKickBtn(interaction, activeTryouts, "tryout");
   if (id.startsWith("tryout_kickmenu:"))   return teamKickMenu(interaction, activeTryouts, editTryoutMessage, "TRYOUT!", "tryout");
-  if (id.startsWith("tryout_swap:"))       return teamSwapBtn(interaction, activeTryouts, "tryout");
-  if (id.startsWith("tryout_swapmenu:"))   return teamSwapMenu(interaction, activeTryouts, "tryout");
-  if (id.startsWith("tryout_swapaccept:")) return teamSwapDecision(interaction, activeTryouts, editTryoutMessage, "tryout", true);
-  if (id.startsWith("tryout_swapreject:")) return teamSwapDecision(interaction, activeTryouts, editTryoutMessage, "tryout", false);
   if (id.startsWith("tryout_changechar:")) return teamChangeChar(interaction, activeTryouts, "tryout");
 }
 
